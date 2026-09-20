@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState, useLayoutEffect } from "react";
+import { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import { sankey, sankeyLinkHorizontal, sankeyJustify } from "d3-sankey";
+import { select, zoom as d3zoom, zoomIdentity, type ZoomBehavior } from "d3";
 import type { GraphEdge, GraphNode } from "../lib/traceGraph";
 import { formatBtc, shortenAddress, shortenTxid } from "../lib/format";
 
@@ -16,7 +17,11 @@ const NODE_PADDING = 28;
 
 export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const zoomGroupRef = useRef<SVGGElement>(null);
+  const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const [size, setSize] = useState({ width: 900, height: 520 });
+  const [zoomLevel, setZoomLevel] = useState(1);
   const [hovered, setHovered] = useState<{ x: number; y: number; content: React.ReactNode } | null>(
     null,
   );
@@ -34,6 +39,45 @@ export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
     ro.observe(el);
     return () => ro.disconnect();
   }, [nodes.length]);
+
+  // Zoom/pan con la rueda del ratón (y arrastre) sobre el lienzo del grafo.
+  useEffect(() => {
+    if (!svgRef.current || !zoomGroupRef.current) return;
+    const zoomBehavior = d3zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.4, 8])
+      .on("zoom", (event) => {
+        zoomGroupRef.current?.setAttribute("transform", event.transform.toString());
+        setZoomLevel(event.transform.k);
+      });
+    zoomBehaviorRef.current = zoomBehavior;
+    select(svgRef.current).call(zoomBehavior);
+    return () => {
+      select(svgRef.current!).on(".zoom", null);
+    };
+  }, []);
+
+  // Al cargar un nuevo grafo, empezamos siempre sin zoom/desplazamiento aplicado.
+  useEffect(() => {
+    if (!svgRef.current || !zoomBehaviorRef.current) return;
+    select(svgRef.current).call(zoomBehaviorRef.current.transform, zoomIdentity);
+    setZoomLevel(1);
+  }, [nodes, edges]);
+
+  function zoomBy(factor: number) {
+    if (!svgRef.current || !zoomBehaviorRef.current) return;
+    select(svgRef.current)
+      .transition()
+      .duration(150)
+      .call(zoomBehaviorRef.current.scaleBy, factor);
+  }
+
+  function resetZoom() {
+    if (!svgRef.current || !zoomBehaviorRef.current) return;
+    select(svgRef.current)
+      .transition()
+      .duration(150)
+      .call(zoomBehaviorRef.current.transform, zoomIdentity);
+  }
 
   const layout = useMemo(() => {
     if (nodes.length === 0) return null;
@@ -75,11 +119,12 @@ export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
   const { nodes: graphNodes, links: graphLinks } = layout;
 
   return (
-    <div ref={containerRef} className="relative w-full overflow-x-auto">
+    <div ref={containerRef} className="relative w-full overflow-hidden">
       <svg
+        ref={svgRef}
         width={size.width}
         height={size.height}
-        className="block min-w-full"
+        className="block w-full cursor-grab touch-none active:cursor-grabbing"
         style={{ background: "#000" }}
       >
         <defs>
@@ -99,6 +144,7 @@ export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
         </defs>
         <rect x={0} y={0} width={size.width} height={size.height} fill="#000000" stroke="#3a3d45" />
 
+        <g ref={zoomGroupRef}>
         <g>
           {graphLinks.map((link, i) => {
             const path = linkPath(link);
@@ -186,7 +232,36 @@ export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
             );
           })}
         </g>
+        </g>
       </svg>
+
+      <div className="pointer-events-none absolute right-2 top-2 flex flex-col items-end gap-1">
+        <div className="pointer-events-auto flex overflow-hidden rounded-md border border-neutral-700 bg-neutral-900/90">
+          <button
+            type="button"
+            onClick={() => zoomBy(1.4)}
+            className="px-2.5 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800"
+            aria-label="Acercar"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomBy(1 / 1.4)}
+            className="border-l border-neutral-700 px-2.5 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800"
+            aria-label="Alejar"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={resetZoom}
+            className="border-l border-neutral-700 px-2.5 py-1.5 text-[10px] text-neutral-300 hover:bg-neutral-800"
+          >
+            {Math.round(zoomLevel * 100)}%
+          </button>
+        </div>
+      </div>
 
       {hovered && (
         <div
@@ -197,10 +272,13 @@ export default function SankeyGraph({ nodes, edges }: SankeyGraphProps) {
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-4 px-1 text-xs text-neutral-400">
-        <LegendDot color="#facc15" label="Dirección de origen" />
-        <LegendDot color="#4ade80" label="Dirección intermedia" />
-        <LegendDot color="#f87171" label="Dirección de destino" />
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-4 px-1 text-xs text-neutral-400">
+        <div className="flex flex-wrap gap-4">
+          <LegendDot color="#facc15" label="Dirección de origen" />
+          <LegendDot color="#4ade80" label="Dirección intermedia" />
+          <LegendDot color="#f87171" label="Dirección de destino" />
+        </div>
+        <span className="text-neutral-600">scroll para zoom · arrastra para mover</span>
       </div>
     </div>
   );

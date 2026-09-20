@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import SearchForm, { type SearchSubmit } from "./components/SearchForm";
 import SankeyGraph from "./components/SankeyGraph";
 import { getTipHeight, AddressNotFoundError, RateLimitError } from "./api/mempool";
 import { traceGraph, type TraceResult } from "./lib/traceGraph";
 import { formatBtc, formatNumber, shortenAddress } from "./lib/format";
 
-type View = "landing" | "loading" | "result" | "error";
+type Status = "idle" | "loading" | "result" | "error";
 
 export default function App() {
-  const [view, setView] = useState<View>("landing");
+  const [status, setStatus] = useState<Status>("idle");
   const [tipHeight, setTipHeight] = useState<number | null>(null);
   const [progress, setProgress] = useState<{ exploredAddress: string; nodeCount: number } | null>(
     null,
@@ -16,6 +16,8 @@ export default function App() {
   const [result, setResult] = useState<TraceResult | null>(null);
   const [query, setQuery] = useState<SearchSubmit | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [formKey, setFormKey] = useState(0);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getTipHeight()
@@ -23,9 +25,15 @@ export default function App() {
       .catch(() => setTipHeight(null));
   }, []);
 
+  useEffect(() => {
+    if (status === "loading" || status === "result" || status === "error") {
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [status]);
+
   async function handleSubmit(data: SearchSubmit) {
     setQuery(data);
-    setView("loading");
+    setStatus("loading");
     setProgress(null);
     setErrorMsg(null);
     try {
@@ -39,31 +47,35 @@ export default function App() {
         onProgress: (p) => setProgress(p),
       });
       setResult(res);
-      setView("result");
+      setStatus("result");
     } catch (err) {
       if (err instanceof AddressNotFoundError) {
         setErrorMsg("No se encontró la dirección indicada en la blockchain.");
       } else if (err instanceof RateLimitError) {
-        setErrorMsg("Se alcanzó el límite de peticiones a la API pública. Espera unos segundos e inténtalo de nuevo.");
+        setErrorMsg(
+          "Se alcanzó el límite de peticiones a la API pública. Espera unos segundos e inténtalo de nuevo.",
+        );
       } else {
         setErrorMsg("Ocurrió un error inesperado consultando la blockchain.");
       }
-      setView("error");
+      setStatus("error");
     }
   }
 
-  function reset() {
-    setView("landing");
+  function clearResults() {
+    setStatus("idle");
     setResult(null);
     setQuery(null);
     setErrorMsg(null);
+    setFormKey((k) => k + 1);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
     <div className="flex min-h-full flex-col bg-[#0a0b0d]">
       <header className="flex items-center justify-between border-b border-neutral-800 px-6 py-4">
         <button
-          onClick={reset}
+          onClick={clearResults}
           className="font-mono text-lg font-bold tracking-tight text-neutral-100"
         >
           <span className="text-emerald-400">Tracer</span>BTC
@@ -73,39 +85,38 @@ export default function App() {
         </span>
       </header>
 
-      <main className="flex flex-1 flex-col justify-center py-10">
-        {view === "landing" && (
-          <SearchForm onSubmit={handleSubmit} tipHeight={tipHeight} />
-        )}
+      <main className="flex-1 py-10">
+        <SearchForm
+          key={formKey}
+          onSubmit={handleSubmit}
+          tipHeight={tipHeight}
+          disabled={status === "loading"}
+        />
 
-        {view === "loading" && (
-          <div className="mx-auto flex w-full max-w-md flex-col items-center gap-4 px-4 text-center">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-700 border-t-emerald-400" />
-            <p className="text-sm text-neutral-300">Rastreando movimientos en la blockchain…</p>
-            {progress && (
-              <p className="font-mono text-xs text-neutral-500">
-                explorando {shortenAddress(progress.exploredAddress)} · {progress.nodeCount}{" "}
-                direcciones encontradas
-              </p>
-            )}
-          </div>
-        )}
+        <div ref={resultsRef} className="scroll-mt-6">
+          {status === "loading" && (
+            <div className="mx-auto mt-10 flex w-full max-w-md flex-col items-center gap-4 px-4 text-center">
+              <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-700 border-t-emerald-400" />
+              <p className="text-sm text-neutral-300">Rastreando movimientos en la blockchain…</p>
+              {progress && (
+                <p className="font-mono text-xs text-neutral-500">
+                  explorando {shortenAddress(progress.exploredAddress)} · {progress.nodeCount}{" "}
+                  direcciones encontradas
+                </p>
+              )}
+            </div>
+          )}
 
-        {view === "error" && (
-          <div className="mx-auto flex w-full max-w-md flex-col items-center gap-4 px-4 text-center">
-            <p className="text-sm text-red-400">{errorMsg}</p>
-            <button
-              onClick={reset}
-              className="rounded-md border border-neutral-700 px-5 py-2 text-sm text-neutral-200 hover:border-neutral-500"
-            >
-              Volver a intentar
-            </button>
-          </div>
-        )}
+          {status === "error" && (
+            <div className="mx-auto mt-10 flex w-full max-w-md flex-col items-center gap-4 px-4 text-center">
+              <p className="text-sm text-red-400">{errorMsg}</p>
+            </div>
+          )}
 
-        {view === "result" && result && query && (
-          <ResultView result={result} query={query} onReset={reset} />
-        )}
+          {status === "result" && result && query && (
+            <ResultView result={result} query={query} onClear={clearResults} />
+          )}
+        </div>
       </main>
 
       <footer className="border-t border-neutral-800 px-6 py-4 text-center text-xs text-neutral-600">
@@ -119,17 +130,17 @@ export default function App() {
 function ResultView({
   result,
   query,
-  onReset,
+  onClear,
 }: {
   result: TraceResult;
   query: SearchSubmit;
-  onReset: () => void;
+  onClear: () => void;
 }) {
   const startNode = result.nodes.find((n) => n.role === "start");
   const endNode = result.nodes.find((n) => n.role === "end");
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4">
+    <div className="mx-auto mt-10 w-full max-w-6xl px-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-mono text-sm text-neutral-400">
@@ -142,10 +153,10 @@ function ResultView({
           </p>
         </div>
         <button
-          onClick={onReset}
+          onClick={onClear}
           className="rounded-md border border-neutral-700 px-4 py-2 text-xs text-neutral-200 hover:border-neutral-500"
         >
-          Nueva búsqueda
+          Limpiar resultados
         </button>
       </div>
 
